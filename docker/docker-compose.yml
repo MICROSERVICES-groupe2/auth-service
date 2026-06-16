@@ -1,0 +1,62 @@
+services:
+  auth-db:
+    image: postgres:15-alpine
+    container_name: auth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5434:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  auth-redis:
+    image: redis:7-alpine
+    container_name: auth-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  auth-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: 8084
+      NODE_ENV: production
+      DATABASE_URL: postgresql://user:password@auth-db:5432/auth_db
+      REDIS_URL: redis://auth-redis:6379
+      JWT_SECRET: jwt_secret_very_long_and_secure_change_in_prod
+      JWT_REFRESH_SECRET: jwt_refresh_secret_very_long_and_secure_change_in_prod
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      BCRYPT_SALT_ROUNDS: 12
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      auth-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  auth-db-data:
