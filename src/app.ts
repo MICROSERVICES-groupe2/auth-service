@@ -8,6 +8,23 @@ import authRoutes from './routes/auth.routes';
 
 const app = express();
 
+// -------------------------------------------------
+//  HTTPS‑enforcement (disabled in dev)
+// -------------------------------------------------
+if (process.env.NODE_ENV === 'production') {
+  // Trust the proxy if behind a reverse‑proxy (e.g., nginx, Fly.io)
+  app.enable('trust proxy');
+
+  app.use((req, res, next) => {
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      return next();
+    }
+    // Redirect to HTTPS
+    res.redirect(`https://${req.headers.host}${req.url}`);
+  });
+}
+
+
 // ── Sécurité ──────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({

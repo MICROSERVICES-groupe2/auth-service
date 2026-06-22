@@ -1,7 +1,8 @@
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { config } from '../config';
 import { User, RefreshToken } from '../models';
-import { redisSet, redisDel } from '../config/redis';
+import { redisSet, redisGet, redisDel } from '../config/redis';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -18,19 +19,116 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
+export interface RegisterInput {
+  email: string;
+  password: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  role?: 'CLIENT' | 'OPERATOR' | 'ADMIN' | 'SUPER_ADMIN';
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  clientId: string | null;
+  role: string;
+  twoFaEnabled: boolean;
+  isVerified: boolean;
+}
+
+const toUserProfile = (user: User): UserProfile => ({
+  id: user.id,
+  email: user.email,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  phone: user.phone,
+  avatarUrl: user.avatarUrl,
+  clientId: user.clientId || null,
+  role: user.role,
+  twoFaEnabled: user.twoFaEnabled,
+  isVerified: user.isVerified,
+});
+
 // ── Register ────────────────────────────────────────────────────
 export const registerUser = async (
-  email: string,
-  password: string,
-  role: 'CLIENT' | 'OPERATOR' | 'ADMIN' | 'SUPER_ADMIN' = 'CLIENT'
-): Promise<{ id: string; email: string; role: string }> => {
+  input: RegisterInput
+): Promise<{ user: UserProfile; otpRequired: true; otp?: string }> => {
+  const { email, password, firstName, lastName, phone, role = 'CLIENT' } = input;
+
   const existing = await User.findOne({ where: { email } });
   if (existing) throw new Error('EMAIL_ALREADY_EXISTS');
 
   const passwordHash = await bcrypt.hash(password, config.bcrypt.saltRounds);
-  const user = await User.create({ email, passwordHash, role });
+  const user = await User.create({
+    email,
+    passwordHash,
+    firstName: firstName || null,
+    lastName: lastName || null,
+    phone: phone || null,
+    role,
+    isVerified: false,
+  });
 
-  return { id: user.id, email: user.email, role: user.role };
+  // Generate registration OTP and store in Redis (10 min TTL)
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  await redisSet(`register-otp:${user.id}`, otp, 600);
+
+  // TODO: send OTP via email/SMS using notification-service
+  console.log(`[REGISTRATION OTP for ${user.email}] ${otp}`);
+
+  return { user: toUserProfile(user), otpRequired: true, otp };
+};
+
+// ── Verify registration OTP ─────────────────────────────────────
+export const verifyRegistrationOtp = async (
+  userId: string,
+  code: string
+): Promise<UserProfile> => {
+  const key = `register-otp:${userId}`;
+  const stored = await redisGet(key);
+
+  if (!stored || stored !== code) {
+    throw new Error('INVALID_OTP');
+  }
+
+  const user = await User.findByPk(userId);
+  if (!user) throw new Error('USER_NOT_FOUND');
+
+  await user.update({ isVerified: true });
+  await redisDel(key);
+
+  // Auto-create client profile if not linked yet
+  if (!user.clientId) {
+    try {
+      const clientResponse = await fetch(`${config.clientService.url}/api/v1/clients`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nom: user.lastName || user.email.split('@')[0],
+          prenom: user.firstName || 'Utilisateur',
+          email: user.email,
+          telephone: user.phone || '+0000000000',
+          dateNaissance: '1990-01-01',
+          adresse: 'Adresse à compléter',
+        }),
+      });
+      if (clientResponse.ok) {
+        const clientData = await clientResponse.json() as any;
+        if (clientData?.id) {
+          await user.update({ clientId: clientData.id });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to auto-create client profile:', err);
+    }
+  }
+
+  return toUserProfile(user);
 };
 
 // ── Login ────────────────────────────────────────────────────────
@@ -38,7 +136,7 @@ export const loginUser = async (
   email: string,
   password: string,
   totpCode?: string
-): Promise<AuthTokens> => {
+): Promise<AuthTokens & { user: UserProfile }> => {
   const user = await User.findOne({ where: { email, isActive: true } });
   if (!user || !user.passwordHash) throw new Error('INVALID_CREDENTIALS');
 
@@ -66,7 +164,7 @@ export const loginUser = async (
     86400
   );
 
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, user: toUserProfile(user) };
 };
 
 // ── Refresh ──────────────────────────────────────────────────────
@@ -127,12 +225,35 @@ export const logoutAllSessions = async (userId: string): Promise<void> => {
   await redisDel(`session:${userId}`);
 };
 
+// ── Update profile picture ───────────────────────────────────────
+export const updateProfilePicture = async (
+  userId: string,
+  avatarUrl: string
+): Promise<UserProfile> => {
+  const user = await User.findByPk(userId);
+  if (!user) throw new Error('USER_NOT_FOUND');
+
+  await user.update({ avatarUrl });
+  return toUserProfile(user);
+};
+
+// ── Update FCM token ─────────────────────────────────────────────
+export const updateFcmToken = async (
+  userId: string,
+  fcmToken: string
+): Promise<void> => {
+  const user = await User.findByPk(userId);
+  if (!user) throw new Error('USER_NOT_FOUND');
+
+  await user.update({ fcmToken });
+};
+
 // ── Google OAuth ─────────────────────────────────────────────────
 export const findOrCreateGoogleUser = async (
   googleId: string,
   email: string,
   displayName: string
-): Promise<AuthTokens> => {
+): Promise<AuthTokens & { user: UserProfile }> => {
   let user = await User.findOne({ where: { googleId } });
 
   if (!user) {
@@ -140,11 +261,15 @@ export const findOrCreateGoogleUser = async (
     if (user) {
       await user.update({ googleId });
     } else {
+      const nameParts = displayName ? displayName.split(' ') : ['', ''];
       user = await User.create({
         email,
         passwordHash: null,
         role: 'CLIENT',
         googleId,
+        firstName: nameParts[0] || null,
+        lastName: nameParts.slice(1).join(' ') || null,
+        isVerified: true,
       });
     }
   }
@@ -162,5 +287,6 @@ export const findOrCreateGoogleUser = async (
     86400
   );
 
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, user: toUserProfile(user) };
 };
+

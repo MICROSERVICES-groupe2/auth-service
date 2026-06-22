@@ -28,9 +28,23 @@ export const registerSchema = Joi.object({
     'string.min': 'Mot de passe : 8 caractères minimum',
     'any.required': 'Mot de passe requis',
   }),
+  firstName: Joi.string().max(100).optional(),
+  lastName: Joi.string().max(100).optional(),
+  phone: Joi.string().max(20).optional(),
   role: Joi.string()
     .valid('CLIENT', 'OPERATOR', 'ADMIN', 'SUPER_ADMIN')
     .default('CLIENT'),
+});
+
+export const verifyRegistrationOtpSchema = Joi.object({
+  userId: Joi.string().uuid().required().messages({
+    'string.uuid': 'userId invalide',
+    'any.required': 'userId requis',
+  }),
+  code: Joi.string().length(6).required().messages({
+    'string.length': 'Le code OTP doit contenir 6 chiffres',
+    'any.required': 'Code OTP requis',
+  }),
 });
 
 export const loginSchema = Joi.object({
@@ -59,4 +73,16 @@ export const twoFAVerifySchema = Joi.object({
 export const twoFAEnableSchema = Joi.object({
   secret: Joi.string().required(),
   token: Joi.string().length(6).required(),
+});
+
+export const avatarUpdateSchema = Joi.object({
+  avatarUrl: Joi.string().required().messages({
+    'any.required': 'URL/base64 avatar requis',
+  }),
+});
+
+export const fcmTokenSchema = Joi.object({
+  fcmToken: Joi.string().required().messages({
+    'any.required': 'Token FCM requis',
+  }),
 });

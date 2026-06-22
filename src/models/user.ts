@@ -7,17 +7,25 @@ export interface UserAttributes {
   id: string;
   email: string;
   passwordHash: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  clientId: string | null;
   role: UserRole;
   twoFaSecret: string | null;
   twoFaEnabled: boolean;
   isActive: boolean;
+  isVerified: boolean;
   googleId: string | null;
+  fcmToken: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 interface UserCreationAttributes extends Optional<UserAttributes,
-  'id' | 'passwordHash' | 'twoFaSecret' | 'twoFaEnabled' | 'isActive' | 'googleId'
+  'id' | 'passwordHash' | 'firstName' | 'lastName' | 'phone' | 'avatarUrl' |
+  'twoFaSecret' | 'twoFaEnabled' | 'isActive' | 'isVerified' | 'googleId' | 'fcmToken' | 'clientId'
 > {}
 
 export class User extends Model<UserAttributes, UserCreationAttributes>
@@ -25,11 +33,18 @@ export class User extends Model<UserAttributes, UserCreationAttributes>
   declare id: string;
   declare email: string;
   declare passwordHash: string | null;
+  declare firstName: string | null;
+  declare lastName: string | null;
+  declare phone: string | null;
+  declare avatarUrl: string | null;
+  declare clientId: string | null;
   declare role: UserRole;
   declare twoFaSecret: string | null;
   declare twoFaEnabled: boolean;
   declare isActive: boolean;
+  declare isVerified: boolean;
   declare googleId: string | null;
+  declare fcmToken: string | null;
   declare readonly createdAt: Date;
   declare readonly updatedAt: Date;
 }
@@ -51,6 +66,26 @@ User.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    firstName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    lastName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    phone: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    avatarUrl: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    clientId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
     role: {
       type: DataTypes.ENUM('CLIENT', 'OPERATOR', 'ADMIN', 'SUPER_ADMIN'),
       defaultValue: 'CLIENT',
@@ -68,8 +103,16 @@ User.init(
       type: DataTypes.BOOLEAN,
       defaultValue: true,
     },
+    isVerified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
     googleId: {
       type: DataTypes.STRING,
+      allowNull: true,
+    },
+    fcmToken: {
+      type: DataTypes.TEXT,
       allowNull: true,
     },
   },
