@@ -6,11 +6,11 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
 
   db: {
-    url: process.env.DATABASE_URL || '',
+    url: process.env.DATABASE_URL || 'postgres://user:password@auth-db:5432/auth_db',
   },
 
   redis: {
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    url: process.env.REDIS_URL || 'redis://auth-redis:6379',
   },
 
   jwt: {
@@ -28,5 +28,9 @@ export const config = {
 
   bcrypt: {
     saltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS || '12', 10),
+  },
+
+  clientService: {
+    url: process.env.CLIENT_SERVICE_URL || 'http://localhost:8081',
   },
 };

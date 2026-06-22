@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { config } from '../config';
 import { AuthRequest } from '../middlewares/authenticate';
 import {
   registerUser,
@@ -6,32 +7,91 @@ import {
   refreshAccessToken,
   logoutUser,
   logoutAllSessions,
+  verifyRegistrationOtp,
+  updateProfilePicture,
+  updateFcmToken as updateFcmTokenService,
   findOrCreateGoogleUser,
 } from '../services/auth.service';
+import {
+  generateAccessToken,
+  generateRefreshToken,
+  saveRefreshTokenToDB,
+  verifyAccessToken,
+  verifyRefreshToken,
+} from '../services/token.service';
 import {
   generateTwoFASecret,
   verifyTwoFACode,
 } from '../services/twofa.service';
 import { User } from '../models';
-import {
-  verifyAccessToken,
-  generateAccessToken,
-  generateRefreshToken,
-  saveRefreshTokenToDB,
-} from '../services/token.service';
+
+const PUBLIC_USER_FIELDS = [
+  'id',
+  'email',
+  'firstName',
+  'lastName',
+  'phone',
+  'avatarUrl',
+  'clientId',
+  'role',
+  'twoFaEnabled',
+  'isVerified',
+  'createdAt',
+];
 
 // ── Register ─────────────────────────────────────────────────────
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, password, role } = req.body;
-    const user = await registerUser(email, password, role);
-    res.status(201).json({ message: 'Compte créé avec succès', user });
+    const { email, password, firstName, lastName, phone, role } = req.body;
+    const result = await registerUser({
+      email,
+      password,
+      firstName,
+      lastName,
+      phone,
+      role,
+    });
+    const response: any = {
+      message: 'Compte créé avec succès. Veuillez vérifier votre email/SMS pour le code OTP.',
+      ...result,
+    };
+
+    // En développement, on expose le code OTP pour faciliter les tests.
+    // En production, le code est envoyé par email/SMS via le notification-service.
+    if (config.nodeEnv === 'development') {
+      response.otp = (result as any).otp;
+    }
+
+    res.status(201).json(response);
   } catch (error: any) {
     if (error.message === 'EMAIL_ALREADY_EXISTS') {
       res.status(409).json({ error: 'EMAIL_ALREADY_EXISTS', message: 'Email déjà utilisé' });
       return;
     }
     res.status(500).json({ error: 'INTERNAL_ERROR', message: "Erreur lors de l'inscription" });
+  }
+};
+
+// ── Verify Registration OTP ──────────────────────────────────────
+export const verifyRegistrationOTP = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { userId, code } = req.body;
+    const user = await verifyRegistrationOtp(userId, code);
+    res.status(200).json({
+      message: 'Compte vérifié avec succès',
+      user,
+    });
+  } catch (error: any) {
+    const errorMap: Record<string, { status: number; message: string }> = {
+      INVALID_OTP: { status: 401, message: 'Code OTP invalide ou expiré' },
+      USER_NOT_FOUND: { status: 404, message: 'Utilisateur introuvable' },
+    };
+    const mapped = errorMap[error.message];
+    if (mapped) {
+      res.status(mapped.status).json({ error: error.message, message: mapped.message });
+      return;
+    }
+    res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Erreur lors de la vérification OTP' });
   }
 };
 
@@ -80,7 +140,7 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
 };
 
 // ── Logout ────────────────────────────────────────────────────────
-export const logout = async (req: Request, res: Response): Promise<void> => {
+export const logout = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const authHeader = req.headers.authorization || '';
     const accessToken = authHeader.split(' ')[1];
@@ -106,7 +166,7 @@ export const logoutAll = async (req: AuthRequest, res: Response): Promise<void> 
 export const getMe = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await User.findByPk(req.currentUser!.id, {
-      attributes: ['id', 'email', 'role', 'twoFaEnabled', 'isActive', 'createdAt'],
+      attributes: PUBLIC_USER_FIELDS,
     });
     if (!user) {
       res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilisateur introuvable' });
@@ -117,6 +177,45 @@ export const getMe = async (req: AuthRequest, res: Response): Promise<void> => {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Erreur interne' });
   }
 };
+
+// ── Update Avatar ─────────────────────────────────────────────────
+export const updateAvatar = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { avatarUrl } = req.body;
+    if (!avatarUrl) {
+      res.status(400).json({ error: 'MISSING_AVATAR_URL', message: 'URL/base64 avatar manquant' });
+      return;
+    }
+    const user = await updateProfilePicture(req.currentUser!.id, avatarUrl);
+    res.status(200).json({ message: 'Avatar mis à jour', user });
+  } catch (error: any) {
+    if (error.message === 'USER_NOT_FOUND') {
+      res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilisateur introuvable' });
+      return;
+    }
+    res.status(500).json({ error: 'INTERNAL_ERROR', message: "Erreur lors de la mise à jour de l'avatar" });
+  }
+};
+
+// ── Update FCM Token ──────────────────────────────────────────────
+export const updateFcmToken = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) {
+      res.status(400).json({ error: 'MISSING_FCM_TOKEN', message: 'Token FCM manquant' });
+      return;
+    }
+    await updateFcmTokenService(req.currentUser!.id, fcmToken);
+    res.status(200).json({ message: 'Token FCM enregistré' });
+  } catch (error: any) {
+    if (error.message === 'USER_NOT_FOUND') {
+      res.status(404).json({ error: 'USER_NOT_FOUND', message: 'Utilisateur introuvable' });
+      return;
+    }
+    res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Erreur lors de la mise à jour du token FCM' });
+  }
+};
+
 
 // ── 2FA Setup ─────────────────────────────────────────────────────
 export const twoFASetup = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -181,7 +280,7 @@ export const twoFAVerify = async (req: AuthRequest, res: Response): Promise<void
   }
 };
 
-// ── Biométrique simulée ───────────────────────────────────────────
+// ── Biométrique (accepte un access token ou un refresh token valide) ─
 export const biometricLogin = async (req: Request, res: Response): Promise<void> => {
   try {
     const { biometricToken } = req.body;
@@ -189,12 +288,16 @@ export const biometricLogin = async (req: Request, res: Response): Promise<void>
       res.status(400).json({ error: 'MISSING_TOKEN', message: 'Token biométrique manquant' });
       return;
     }
-    let decoded;
+    let decoded: any;
     try {
       decoded = verifyAccessToken(biometricToken);
     } catch {
-      res.status(401).json({ error: 'INVALID_BIOMETRIC_TOKEN', message: 'Token biométrique invalide' });
-      return;
+      try {
+        decoded = verifyRefreshToken(biometricToken);
+      } catch {
+        res.status(401).json({ error: 'INVALID_BIOMETRIC_TOKEN', message: 'Token biométrique invalide' });
+        return;
+      }
     }
     const user = await User.findByPk(decoded.id);
     if (!user || !user.isActive) {
@@ -205,7 +308,23 @@ export const biometricLogin = async (req: Request, res: Response): Promise<void>
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
     await saveRefreshTokenToDB(refreshToken, user.id);
-    res.status(200).json({ message: 'Authentification biométrique réussie', accessToken, refreshToken });
+    res.status(200).json({
+      message: 'Authentification biométrique réussie',
+      accessToken,
+      refreshToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        avatarUrl: user.avatarUrl,
+        clientId: user.clientId,
+        role: user.role,
+        twoFaEnabled: user.twoFaEnabled,
+        isVerified: user.isVerified,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Erreur authentification biométrique' });
   }
